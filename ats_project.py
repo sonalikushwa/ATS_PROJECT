@@ -9,8 +9,7 @@ st.set_page_config(page_title="ATS Resume Checker", layout="wide")
 st.title("📄 AI Powered ATS Resume Checker")
 
 # ---------------- API KEY (NO INPUT REQUIRED) ----------------
-API_KEY = "AIzaSyAJvTl9WqLAzwR8PSPr9fULd4QgsQji1wc"   # <-- your working key
-genai.configure(api_key=API_KEY)
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
 MODEL_NAME = "gemini-2.5-flash"
 
