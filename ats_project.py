@@ -6,7 +6,7 @@ import docx
 import re
 import json
 
-from google import genai
+import google.genai as genai
 
 # ====== CONFIGURATION ======
 API_KEY = st.secrets["GEMINI_API_KEY"]  # Replace with your actual key
