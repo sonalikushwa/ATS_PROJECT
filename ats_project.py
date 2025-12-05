@@ -1,113 +1,116 @@
+# Filename: ats_checker.py
+
 import streamlit as st
-import google.generativeai as genai
-from PyPDF2 import PdfReader
+import PyPDF2
 import docx
 import re
+import json
 
-# ---------------- PAGE CONFIG ----------------
-st.set_page_config(page_title="ATS Resume Checker", layout="wide")
-st.title("📄 AI Powered ATS Resume Checker")
+from google import genai
 
-# ---------------- API KEY (NO INPUT REQUIRED) ----------------
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# ====== CONFIGURATION ======
+API_KEY = st.secrets["GEMINI_API_KEY"]  # Replace with your actual key
+MODEL = "gemini-2.5-flash"  # or "gemini-2.0-flash" etc — choose based on availability
 
-MODEL_NAME = "gemini-2.5-flash"
+# Create Gemini client
+client = genai.Client(api_key=API_KEY)
 
-# ---------------- RESUME UPLOAD ----------------
-uploaded_file = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf", "docx"])
-
-
-# ---------------- HELPER FUNCTIONS ----------------
-def extract_text_pdf(file):
-    reader = PdfReader(file)
+# ====== HELPER FUNCTIONS ======
+def extract_text_from_pdf(file):
+    reader = PyPDF2.PdfReader(file)
     text = ""
     for page in reader.pages:
-        try:
-            t = page.extract_text()
-            if t:
-                text += t + "\n"
-        except:
-            pass
-    return text
+        text += page.extract_text() or ""
+    return text.strip()
 
-
-def extract_text_docx(file):
+def extract_text_from_docx(file):
     doc = docx.Document(file)
-    return "\n".join(par.text for par in doc.paragraphs)
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
-
-def generate_ats_score(resume_text):
-    model = genai.GenerativeModel(MODEL_NAME)
-    prompt = f"""
-    You are an ATS scoring AI. Evaluate the resume and return only:
-
-    ATS Score: X/100
-
-    Resume:
-    {resume_text}
-    """
-
-    response = model.generate_content(prompt)
-    return response.text
-
-
-def generate_full_analysis(resume_text):
-    model = genai.GenerativeModel(MODEL_NAME)
-    prompt = f"""
-    You are an ATS evaluation AI. Analyze the resume and return:
-
-    Strengths:
-    - ...
-
-    Weaknesses:
-    - ...
-
-    Missing Keywords:
-    - ...
-
-    Suggestions:
-    - ...
-
-    Suitable Job Roles:
-    - ...
-
-    Resume:
-    {resume_text}
-    """
-
-    response = model.generate_content(prompt)
-    return response.text
-
-
-# ---------------- MAIN PROCESS ----------------
-if uploaded_file:
-
-    # Extract resume text
-    if uploaded_file.name.endswith(".pdf"):
-        resume_text = extract_text_pdf(uploaded_file)
+def read_resume(uploaded_file):
+    fname = uploaded_file.name.lower()
+    if fname.endswith(".pdf"):
+        return extract_text_from_pdf(uploaded_file)
+    elif fname.endswith(".docx"):
+        return extract_text_from_docx(uploaded_file)
     else:
-        resume_text = extract_text_docx(uploaded_file)
+        return ""
 
-    # ATS SCORE SECTION
-    st.subheader("🔹 ATS Score")
-    with st.spinner("Calculating ATS score..."):
-        ats_result = generate_ats_score(resume_text)
+def ats_evaluate(resume_text, jd_text):
+    prompt = f"""
+You are an expert hiring consultant.  
+Compare the resume and the job description below.
 
-    score_match = re.search(r"ATS Score:\s*(\d+)", ats_result)
-    ats_score = int(score_match.group(1)) if score_match else 0
+=== JOB DESCRIPTION ===
+{jd_text}
 
-    st.progress(ats_score / 100)
-    st.write(f"### ⭐ Your ATS Score: **{ats_score}/100**")
+=== RESUME ===
+{resume_text}
 
-    # FULL ANALYSIS SECTION
-    st.subheader("🔹 Full Resume Analysis")
-    if st.button("Show Full Analysis"):
-        with st.spinner("Generating detailed analysis..."):
-            full_result = generate_full_analysis(resume_text)
-        st.write(full_result)
+Provide output in **strict JSON** format with keys:
+- score  (integer 0–100)
+- strengths  (list of strings)
+- missing_skills  (list of strings)
+- verdict  (one of: Shortlist / Consider / Not a Match)
+- recommendations  (list of strings)
+"""
+    try:
+        resp = client.models.generate_content(
+            model=MODEL,
+            contents=prompt
+        )
+    except Exception as e:
+        return {"error": f"API request failed: {e}"}
 
+    text = resp.text.strip()
+    # Sometimes Gemini returns extra text; extract JSON
+    m = re.search(r"\{[\s\S]*\}", text)
+    if m:
+        text = m.group(0)
+
+    try:
+        result = json.loads(text)
+    except Exception as e:
+        return {"error": f"Failed to parse JSON: {e}\nResponse: {text}"}
+
+    return result
+
+# ====== STREAMLIT UI ======
+st.set_page_config(page_title="ATS Resume Checker", layout="centered")
+st.title("📄 ATS Resume Checker")
+
+uploaded = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf","docx"])
+jd = st.text_area("Paste Job Description", height=200)
+
+if uploaded and jd:
+    if st.button("Analyze"):
+        resume_text = read_resume(uploaded)
+        if not resume_text:
+            st.error("Could not read resume — unsupported file or extraction failed.")
+        else:
+            with st.spinner("Evaluating..."):
+                result = ats_evaluate(resume_text, jd)
+            if result.get("error"):
+                st.error(result["error"])
+            else:
+                st.subheader("📊 ATS Match Score")
+                score = result.get("score", 0)
+                st.metric("Score", f"{score} / 100")
+                st.progress(score / 100)
+
+                st.subheader("💪 Strengths")
+                for s in result.get("strengths", []):
+                    st.write(f"- {s}")
+
+                st.subheader("⚠️ Missing or Weak Skills")
+                for m in result.get("missing_skills", []):
+                    st.write(f"- {m}")
+
+                st.subheader("🧾 Verdict")
+                st.write(result.get("verdict", "N/A"))
+
+                st.subheader("📈 Recommendations")
+                for r in result.get("recommendations", []):
+                    st.write(f"- {r}")
 else:
-    st.info("Upload your resume to continue.")
-
-
-
+    st.info("Upload a resume and paste the job description to begin.")
